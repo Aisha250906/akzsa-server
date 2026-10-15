@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: akzsa-server
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: AKZSA_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: GROQ_API_KEY
+        sync: false
+      - key: AKZSA_SERVER_TOKEN
+        sync: false
