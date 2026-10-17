@@ -16,7 +16,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("akzsa")
 
 APP_NAME = "AKZSA Backend"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 SERVER_TOKEN = os.getenv("AKZSA_SERVER_TOKEN", "").strip()
@@ -28,7 +28,7 @@ MAX_VOICE_AUDIO_BYTES = 20 * 1024 * 1024
 app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
-    description="Backend foundation for the AKZSA voice keyboard.",
+    description="AKZSA voice and command backend. Image labeling, OCR, PDF extraction, file indexing and ranking run locally on Android; private file contents are not uploaded.",
 )
 
 
@@ -198,6 +198,8 @@ async def health():
         "groq_configured": bool(GROQ_API_KEY),
         "authentication_configured": bool(SERVER_TOKEN),
         "voice_transcription_configured": bool(GROQ_API_KEY),
+        "file_search_mode": "on-device-only",
+        "file_index_uploaded": False,
     }
 
 
