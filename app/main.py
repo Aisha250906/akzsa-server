@@ -1,22 +1,146 @@
-import os
+import asyncio
+import base64
+import contextlib
+import hmac
 import json
 import logging
+import os
 import re
-import base64
-from typing import Literal, Optional
+import threading
+import time
+import uuid
+from collections import deque
+from typing import Callable, Deque, Dict, Literal, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("akzsa")
 
+# ======================================================================
+# Abuse controls (single-instance, in-memory)
+# ======================================================================
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def client_key(install_id: Optional[str], ip: Optional[str]) -> str:
+    """Opaque rate-limit key. A syntactically valid install id wins; otherwise the peer IP is used.
+
+    An attacker can mint new install ids, so the IP limiter below is the backstop (see IpAndInstallLimiter)."""
+    if install_id and _UUID.match(install_id.strip().lower()):
+        return "i:" + install_id.strip().lower()
+    return "ip:" + (ip or "unknown")
+
+
+class SlidingWindowLimiter:
+    def __init__(self, limit: int, window_s: float = 60.0, clock: Callable[[], float] = time.monotonic, max_keys: int = 20_000):
+        if limit < 1 or window_s <= 0:
+            raise ValueError("limit and window must be positive")
+        self.limit, self.window_s, self._clock, self._max_keys = limit, window_s, clock, max_keys
+        self._hits: Dict[str, Deque[float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: str) -> Tuple[bool, int]:
+        """Records a hit. Returns (allowed, retry_after_seconds)."""
+        now = self._clock()
+        with self._lock:
+            q = self._hits.setdefault(key, deque())
+            cutoff = now - self.window_s
+            while q and q[0] <= cutoff:
+                q.popleft()
+            if len(q) >= self.limit:
+                return False, max(1, int(q[0] + self.window_s - now) + 1)
+            q.append(now)
+            if len(self._hits) > self._max_keys:
+                self._evict(cutoff)
+            return True, 0
+
+    def _evict(self, cutoff: float) -> None:
+        for k in [k for k, v in self._hits.items() if not v or v[-1] <= cutoff]:
+            del self._hits[k]
+        while len(self._hits) > self._max_keys:          # still too many live keys: drop the oldest-touched
+            oldest = min(self._hits, key=lambda k: self._hits[k][-1])
+            del self._hits[oldest]
+
+    def reset(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
+class IpAndInstallLimiter:
+    """Both the per-install and the per-IP budget must allow the request. The IP budget is larger so several
+    people behind one NAT are fine, but rotating fake install ids cannot bypass it."""
+
+    def __init__(self, per_install: int, per_ip: int, window_s: float = 60.0, clock: Callable[[], float] = time.monotonic):
+        self.per_install = SlidingWindowLimiter(per_install, window_s, clock)
+        self.per_ip = SlidingWindowLimiter(per_ip, window_s, clock)
+
+    def check(self, install_id: Optional[str], ip: Optional[str]) -> Tuple[bool, int]:
+        ok, wait = self.per_ip.check("ip:" + (ip or "unknown"))
+        if not ok:
+            return False, wait
+        return self.per_install.check(client_key(install_id, ip))
+
+    def reset(self) -> None:
+        self.per_install.reset()
+        self.per_ip.reset()
+
+# ======================================================================
+# Speech-to-text output guards (prompt echo / subtitle boilerplate)
+# ======================================================================
+_PUNCT = re.compile(r"[^\w\u0900-\u097F\u0C80-\u0CFF]+", re.UNICODE)
+
+# Multi-word subtitle boilerplate only. Single words/short phrases such as "Thank you" are deliberately NOT
+# listed: a person can really dictate them, and rejecting them would drop real speech.
+_BOILERPLATE = {
+    "thanks for watching",
+    "thank you for watching",
+    "thanks for watching and see you next time",
+    "please subscribe",
+    "please subscribe to my channel",
+    "like and subscribe",
+    "don t forget to subscribe",
+    "subtitles by the amara org community",
+    "subtitles by amara org",
+    "transcribed by",
+    "www mooji org",
+}
+SHORT_AUDIO_BYTES = 48 * 1024  # roughly <= 6 s of 64 kbps AAC
+
+
+def normalize(text: str) -> str:
+    return _PUNCT.sub(" ", (text or "").lower()).strip()
+
+
+def is_prompt_echo(transcript: str, prompt: Optional[str]) -> bool:
+    """True when the transcript is (mostly) the prompt text coming back."""
+    t, p = normalize(transcript), normalize(prompt or "")
+    if not t or not p:
+        return False
+    words = t.split()
+    if len(words) >= 6 and t in p:
+        return True
+    if len(words) >= 4:
+        prompt_words = set(p.split())
+        overlap = sum(1 for w in words if w in prompt_words) / len(words)
+        return overlap >= 0.8
+    return False
+
+
+def is_silence_hallucination(transcript: str, audio_bytes: int) -> bool:
+    t = normalize(transcript)
+    return audio_bytes < SHORT_AUDIO_BYTES and t in _BOILERPLATE
+
+
 APP_NAME = "AKZSA Backend"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 SERVER_TOKEN = os.getenv("AKZSA_SERVER_TOKEN", "").strip()
@@ -25,11 +149,101 @@ GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3-turbo").strip()
 MAX_VOICE_AUDIO_BYTES = 20 * 1024 * 1024
 
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def is_production() -> bool:
+    return os.getenv("AKZSA_ENV", "development").strip().lower() == "production"
+
+
+MAX_JSON_BODY_BYTES = 256 * 1024
+# Abuse controls (single-instance, in-memory; see docs/BACKEND_OPERATIONS.md for the multi-instance upgrade path).
+COMMAND_LIMITER = IpAndInstallLimiter(
+    per_install=_int_env("AKZSA_RATE_COMMANDS_PER_MIN", 30), per_ip=_int_env("AKZSA_RATE_COMMANDS_PER_MIN_IP", 90)
+)
+VOICE_LIMITER = IpAndInstallLimiter(
+    per_install=_int_env("AKZSA_RATE_VOICE_PER_MIN", 10), per_ip=_int_env("AKZSA_RATE_VOICE_PER_MIN_IP", 30)
+)
+MAX_CONCURRENT_PROVIDER_CALLS = _int_env("AKZSA_MAX_CONCURRENT_PROVIDER_CALLS", 8)
+PROVIDER_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_PROVIDER_CALLS)
+
+
+@contextlib.asynccontextmanager
+async def provider_slot():
+    """Caps simultaneous paid provider calls so a burst cannot exhaust the instance or the provider budget."""
+    try:
+        await asyncio.wait_for(PROVIDER_SLOTS.acquire(), timeout=2.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="The server is busy. Please retry in a moment.", headers={"Retry-After": "5"})
+    try:
+        yield
+    finally:
+        PROVIDER_SLOTS.release()
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _limit(limiter_name: str):
+    async def dependency(request: Request, x_akzsa_install_id: Optional[str] = Header(default=None)) -> None:
+        limiter = globals()[limiter_name]
+        allowed, retry_after = limiter.check(x_akzsa_install_id, _client_ip(request))
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please wait a moment and try again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return dependency
+
+
+limit_commands = _limit("COMMAND_LIMITER")
+limit_voice = _limit("VOICE_LIMITER")
+
 app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
+    # Interactive docs are an information leak in production.
+    docs_url=None if is_production() else "/docs",
+    redoc_url=None,
+    openapi_url=None if is_production() else "/openapi.json",
     description="AKZSA voice and command backend. Image labeling, OCR, PDF extraction, file indexing and ranking run locally on Android; private file contents are not uploaded.",
 )
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Request id, body-size cap, security headers and a content-free access log."""
+    raw_id = request.headers.get("x-request-id", "")
+    request_id = raw_id if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", raw_id or "") else uuid.uuid4().hex
+    request.state.request_id = request_id
+    started = time.monotonic()
+    if request.url.path != "/v1/voice/transcribe":
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_JSON_BODY_BYTES:
+            too_big = JSONResponse(status_code=413, content={"detail": "Request body is too large."})
+            too_big.headers["X-Request-ID"] = request_id
+            return too_big
+    try:
+        response = await call_next(request)
+    except Exception as error:  # never leak internals or request content
+        logger.warning("request_id=%s unhandled %s", request_id, type(error).__name__)
+        response = JSONResponse(status_code=500, content={"detail": "Internal server error."})
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    # Method, path and status only: never query strings, headers, bodies, transcripts, tokens or install ids.
+    logger.info("request_id=%s %s %s -> %s in %dms", request_id, request.method, request.url.path, response.status_code, int((time.monotonic() - started) * 1000))
+    return response
 
 
 class CommandRequest(BaseModel):
@@ -185,7 +399,8 @@ def require_client_token(authorization: Optional[str] = Header(default=None)) ->
             raise HTTPException(status_code=503, detail="Server authentication is not configured.")
         return
     expected = f"Bearer {SERVER_TOKEN}"
-    if authorization != expected:
+    # Constant-time comparison so response timing cannot be used to recover the token byte by byte.
+    if not hmac.compare_digest((authorization or "").encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token.")
 
 
@@ -208,7 +423,7 @@ async def root():
     return {
         "name": APP_NAME,
         "version": APP_VERSION,
-        "docs": "/docs",
+        "docs": None if is_production() else "/docs",
         "health": "/health",
     }
 
@@ -230,6 +445,7 @@ async def search_phone_files(_: None = Depends(require_client_token)):
 async def transcribe_voice(
     request: Request,
     _: None = Depends(require_client_token),
+    __: None = Depends(limit_voice),
     x_akzsa_language: str = Header(default="en"),
     x_akzsa_polish: str = Header(default="true"),
     x_akzsa_vocabulary_b64: str = Header(default=""),
@@ -299,20 +515,24 @@ async def transcribe_voice(
             "Keep names, numbers, technical terms, and the speaker's meaning. Do not summarize."
         )
     else:
-        asr_prompt = "Transcribe spoken English accurately. Keep names, technical terms and the speaker's meaning. Do not summarize."
+        # Whisper treats `prompt` as preceding transcript. An instruction such as "Transcribe spoken English..."
+        # can come back as the "dictation" on quiet audio, so English gets a glossary only (or no prompt at all).
+        asr_prompt = ""
     if vocabulary.strip():
-        asr_prompt += " Prefer these spellings when clearly spoken: " + re.sub(r"[\r\n]+", ", ", vocabulary).strip()
+        glossary = re.sub(r"[\r\n]+", ", ", vocabulary).strip()
+        asr_prompt = (asr_prompt + " Prefer these spellings when clearly spoken: " + glossary).strip() if asr_prompt else "Glossary: " + glossary + "."
     # Whisper's prompt is short; truncate conservatively rather than sending arbitrary context.
     asr_prompt = asr_prompt[:650]
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        async with provider_slot(), httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
             transcription_data = {
                 "model": GROQ_ASR_MODEL,
                 "response_format": "json",
                 "temperature": "0",
-                "prompt": asr_prompt,
             }
+            if asr_prompt:
+                transcription_data["prompt"] = asr_prompt
             # For Hinglish, omit the language hint so Whisper can auto-detect code-switching.
             # Setting Hindi or English explicitly biases Whisper toward a single language.
             if language != "hinglish":
@@ -334,6 +554,9 @@ async def transcribe_voice(
         transcript = str(data.get("text") or "").strip()
         if not transcript:
             raise HTTPException(status_code=502, detail="The speech provider returned an empty transcript.")
+        if is_prompt_echo(transcript, asr_prompt) or is_silence_hallucination(transcript, len(audio_bytes)):
+            logger.info("voice transcript rejected by guard (prompt echo or silence boilerplate)")
+            raise HTTPException(status_code=422, detail="No speech was detected in the recording. Nothing was inserted.")
     except HTTPException:
         raise
     except httpx.TimeoutException:
@@ -387,7 +610,7 @@ async def transcribe_voice(
             },
         }
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as client:
+            async with provider_slot(), httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as client:
                 polish_response = await client.post(
                     GROQ_BASE_URL,
                     headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
@@ -424,6 +647,7 @@ async def transcribe_voice(
 async def interpret_command(
     request: CommandRequest,
     _: None = Depends(require_client_token),
+    __: None = Depends(limit_commands),
 ):
     # Resolve simple and unambiguous commands without relying on the LLM. This also
     # makes basic editing commands available when Groq is temporarily unavailable.
@@ -516,7 +740,7 @@ Command rules:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with provider_slot(), httpx.AsyncClient(timeout=20.0) as client:
             response = await client.post(
                 GROQ_BASE_URL,
                 headers={
@@ -527,6 +751,10 @@ Command rules:
             )
         if response.status_code >= 400:
             logger.warning("Groq request failed with status %s", response.status_code)
+            if response.status_code == 429:
+                raise HTTPException(status_code=429, detail="The AI provider is rate-limiting requests. Try again shortly.", headers={"Retry-After": "10"})
+            if response.status_code in {401, 403}:
+                raise HTTPException(status_code=503, detail="The server's AI-provider credentials need attention.")
             raise HTTPException(
                 status_code=502,
                 detail="The AI provider could not process this command. Please retry.",
@@ -544,8 +772,8 @@ Command rules:
     except HTTPException:
         raise
     except (httpx.TimeoutException, httpx.RequestError):
-        logger.exception("Network error calling Groq")
+        logger.warning("Network error calling Groq")
         raise HTTPException(status_code=504, detail="AI request timed out. Please retry.")
     except (KeyError, IndexError, ValueError, TypeError):
-        logger.exception("Invalid response from AI provider")
+        logger.warning("Invalid response from AI provider")
         raise HTTPException(status_code=502, detail="The AI provider returned an invalid response.")
