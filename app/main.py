@@ -6,11 +6,9 @@ import json
 import logging
 import os
 import re
-import threading
 import time
 import uuid
-from collections import deque
-from typing import Callable, Deque, Dict, Literal, Optional, Tuple
+from typing import Literal, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
@@ -18,126 +16,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
+from app import asr_guard, limits, voice_prompt
 
 load_dotenv()
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("akzsa")
-
-# ======================================================================
-# Abuse controls (single-instance, in-memory)
-# ======================================================================
-_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-
-
-def client_key(install_id: Optional[str], ip: Optional[str]) -> str:
-    """Opaque rate-limit key. A syntactically valid install id wins; otherwise the peer IP is used.
-
-    An attacker can mint new install ids, so the IP limiter below is the backstop (see IpAndInstallLimiter)."""
-    if install_id and _UUID.match(install_id.strip().lower()):
-        return "i:" + install_id.strip().lower()
-    return "ip:" + (ip or "unknown")
-
-
-class SlidingWindowLimiter:
-    def __init__(self, limit: int, window_s: float = 60.0, clock: Callable[[], float] = time.monotonic, max_keys: int = 20_000):
-        if limit < 1 or window_s <= 0:
-            raise ValueError("limit and window must be positive")
-        self.limit, self.window_s, self._clock, self._max_keys = limit, window_s, clock, max_keys
-        self._hits: Dict[str, Deque[float]] = {}
-        self._lock = threading.Lock()
-
-    def check(self, key: str) -> Tuple[bool, int]:
-        """Records a hit. Returns (allowed, retry_after_seconds)."""
-        now = self._clock()
-        with self._lock:
-            q = self._hits.setdefault(key, deque())
-            cutoff = now - self.window_s
-            while q and q[0] <= cutoff:
-                q.popleft()
-            if len(q) >= self.limit:
-                return False, max(1, int(q[0] + self.window_s - now) + 1)
-            q.append(now)
-            if len(self._hits) > self._max_keys:
-                self._evict(cutoff)
-            return True, 0
-
-    def _evict(self, cutoff: float) -> None:
-        for k in [k for k, v in self._hits.items() if not v or v[-1] <= cutoff]:
-            del self._hits[k]
-        while len(self._hits) > self._max_keys:          # still too many live keys: drop the oldest-touched
-            oldest = min(self._hits, key=lambda k: self._hits[k][-1])
-            del self._hits[oldest]
-
-    def reset(self) -> None:
-        with self._lock:
-            self._hits.clear()
-
-
-class IpAndInstallLimiter:
-    """Both the per-install and the per-IP budget must allow the request. The IP budget is larger so several
-    people behind one NAT are fine, but rotating fake install ids cannot bypass it."""
-
-    def __init__(self, per_install: int, per_ip: int, window_s: float = 60.0, clock: Callable[[], float] = time.monotonic):
-        self.per_install = SlidingWindowLimiter(per_install, window_s, clock)
-        self.per_ip = SlidingWindowLimiter(per_ip, window_s, clock)
-
-    def check(self, install_id: Optional[str], ip: Optional[str]) -> Tuple[bool, int]:
-        ok, wait = self.per_ip.check("ip:" + (ip or "unknown"))
-        if not ok:
-            return False, wait
-        return self.per_install.check(client_key(install_id, ip))
-
-    def reset(self) -> None:
-        self.per_install.reset()
-        self.per_ip.reset()
-
-# ======================================================================
-# Speech-to-text output guards (prompt echo / subtitle boilerplate)
-# ======================================================================
-_PUNCT = re.compile(r"[^\w\u0900-\u097F\u0C80-\u0CFF]+", re.UNICODE)
-
-# Multi-word subtitle boilerplate only. Single words/short phrases such as "Thank you" are deliberately NOT
-# listed: a person can really dictate them, and rejecting them would drop real speech.
-_BOILERPLATE = {
-    "thanks for watching",
-    "thank you for watching",
-    "thanks for watching and see you next time",
-    "please subscribe",
-    "please subscribe to my channel",
-    "like and subscribe",
-    "don t forget to subscribe",
-    "subtitles by the amara org community",
-    "subtitles by amara org",
-    "transcribed by",
-    "www mooji org",
-}
-SHORT_AUDIO_BYTES = 48 * 1024  # roughly <= 6 s of 64 kbps AAC
-
-
-def normalize(text: str) -> str:
-    return _PUNCT.sub(" ", (text or "").lower()).strip()
-
-
-def is_prompt_echo(transcript: str, prompt: Optional[str]) -> bool:
-    """True when the transcript is (mostly) the prompt text coming back."""
-    t, p = normalize(transcript), normalize(prompt or "")
-    if not t or not p:
-        return False
-    words = t.split()
-    if len(words) >= 6 and t in p:
-        return True
-    if len(words) >= 4:
-        prompt_words = set(p.split())
-        overlap = sum(1 for w in words if w in prompt_words) / len(words)
-        return overlap >= 0.8
-    return False
-
-
-def is_silence_hallucination(transcript: str, audio_bytes: int) -> bool:
-    t = normalize(transcript)
-    return audio_bytes < SHORT_AUDIO_BYTES and t in _BOILERPLATE
-
 
 APP_NAME = "AKZSA Backend"
 APP_VERSION = "0.3.0"
@@ -148,6 +32,8 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_ASR_MODEL = os.getenv("GROQ_ASR_MODEL", "whisper-large-v3-turbo").strip()
 MAX_VOICE_AUDIO_BYTES = 20 * 1024 * 1024
+# Optional A/B switch for Hinglish: "hi" forces Hindi decoding (Roman output comes from the prompt), empty = auto-detect.
+HINGLISH_LANGUAGE_HINT = os.getenv("AKZSA_HINGLISH_LANGUAGE", "").strip().lower()
 
 
 
@@ -164,11 +50,11 @@ def is_production() -> bool:
 
 MAX_JSON_BODY_BYTES = 256 * 1024
 # Abuse controls (single-instance, in-memory; see docs/BACKEND_OPERATIONS.md for the multi-instance upgrade path).
-COMMAND_LIMITER = IpAndInstallLimiter(
+COMMAND_LIMITER = limits.IpAndInstallLimiter(
     per_install=_int_env("AKZSA_RATE_COMMANDS_PER_MIN", 30), per_ip=_int_env("AKZSA_RATE_COMMANDS_PER_MIN_IP", 90)
 )
-VOICE_LIMITER = IpAndInstallLimiter(
-    per_install=_int_env("AKZSA_RATE_VOICE_PER_MIN", 10), per_ip=_int_env("AKZSA_RATE_VOICE_PER_MIN_IP", 30)
+VOICE_LIMITER = limits.IpAndInstallLimiter(
+    per_install=_int_env("AKZSA_RATE_VOICE_PER_MIN", 40), per_ip=_int_env("AKZSA_RATE_VOICE_PER_MIN_IP", 120)
 )
 MAX_CONCURRENT_PROVIDER_CALLS = _int_env("AKZSA_MAX_CONCURRENT_PROVIDER_CALLS", 8)
 PROVIDER_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_PROVIDER_CALLS)
@@ -449,8 +335,9 @@ async def transcribe_voice(
     x_akzsa_language: str = Header(default="en"),
     x_akzsa_polish: str = Header(default="true"),
     x_akzsa_vocabulary_b64: str = Header(default=""),
+    x_akzsa_context_b64: str = Header(default=""),
 ):
-    """Transcribe an opted-in short voice session from a raw audio/mp4 request body.
+    """Transcribe an opted-in voice session (or one live-dictation phrase) from a raw audio request body (M4A or WAV).
 
     Audio is held in memory only and forwarded to Groq. This endpoint does not write
     user audio to server disk, and it never logs audio or transcript content.
@@ -504,25 +391,16 @@ async def transcribe_voice(
         except (ValueError, UnicodeError):
             vocabulary = ""
 
-    if language == "hi":
-        asr_prompt = "Transcribe spoken Hindi accurately in Devanagari. Preserve names, numbers, technical terms, and the speaker's meaning. Do not translate or summarize."
-    elif language == "kn":
-        asr_prompt = "Transcribe spoken Kannada accurately in Kannada script. Preserve names, numbers, and technical terms. Do not translate to English or summarize."
-    elif language == "hinglish":
-        asr_prompt = (
-            "Transcribe code-switched Hindi and English (Hinglish) as spoken. The speaker mixes Hindi and English in the same sentence. "
-            "Preserve English words as English. Prefer commonly used Latin/romanized script for Hindi words, rather than translating the sentence or converting it to Devanagari. "
-            "Keep names, numbers, technical terms, and the speaker's meaning. Do not summarize."
-        )
-    else:
-        # Whisper treats `prompt` as preceding transcript. An instruction such as "Transcribe spoken English..."
-        # can come back as the "dictation" on quiet audio, so English gets a glossary only (or no prompt at all).
-        asr_prompt = ""
-    if vocabulary.strip():
-        glossary = re.sub(r"[\r\n]+", ", ", vocabulary).strip()
-        asr_prompt = (asr_prompt + " Prefer these spellings when clearly spoken: " + glossary).strip() if asr_prompt else "Glossary: " + glossary + "."
-    # Whisper's prompt is short; truncate conservatively rather than sending arbitrary context.
-    asr_prompt = asr_prompt[:650]
+    session_context = ""
+    if x_akzsa_context_b64:
+        try:
+            decoded_context = base64.urlsafe_b64decode(x_akzsa_context_b64.encode("ascii") + b"=" * (-len(x_akzsa_context_b64) % 4))
+            session_context = decoded_context.decode("utf-8", errors="ignore")[:400]
+        except (ValueError, UnicodeError):
+            session_context = ""
+    asr_prompt, echo_reference = voice_prompt.build_asr_prompt(language, vocabulary, session_context)
+    session_context = voice_prompt.clean_context(session_context)
+    upload_name, upload_mime = voice_prompt.upload_meta(content_type)
 
     try:
         async with provider_slot(), httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
@@ -533,15 +411,18 @@ async def transcribe_voice(
             }
             if asr_prompt:
                 transcription_data["prompt"] = asr_prompt
-            # For Hinglish, omit the language hint so Whisper can auto-detect code-switching.
-            # Setting Hindi or English explicitly biases Whisper toward a single language.
+            # For Hinglish, omit the language hint by default so Whisper can auto-detect code-switching.
+            # Setting Hindi or English explicitly biases Whisper toward a single language. AKZSA_HINGLISH_LANGUAGE=hi
+            # is an opt-in experiment (Hindi decoding + Roman example prompt).
             if language != "hinglish":
                 transcription_data["language"] = language
+            elif HINGLISH_LANGUAGE_HINT in {"hi", "en", "kn"}:
+                transcription_data["language"] = HINGLISH_LANGUAGE_HINT
             response = await client.post(
                 GROQ_AUDIO_URL,
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
                 data=transcription_data,
-                files={"file": ("akzsa-dictation.m4a", audio_bytes, "audio/mp4")},
+                files={"file": (upload_name, audio_bytes, upload_mime)},
             )
         if response.status_code >= 400:
             logger.warning("Groq transcription request failed with status %s", response.status_code)
@@ -554,7 +435,11 @@ async def transcribe_voice(
         transcript = str(data.get("text") or "").strip()
         if not transcript:
             raise HTTPException(status_code=502, detail="The speech provider returned an empty transcript.")
-        if is_prompt_echo(transcript, asr_prompt) or is_silence_hallucination(transcript, len(audio_bytes)):
+        if (
+            asr_guard.is_prompt_echo(transcript, echo_reference)
+            or asr_guard.is_context_repeat(transcript, session_context)
+            or asr_guard.is_silence_hallucination(transcript, len(audio_bytes))
+        ):
             logger.info("voice transcript rejected by guard (prompt echo or silence boilerplate)")
             raise HTTPException(status_code=422, detail="No speech was detected in the recording. Nothing was inserted.")
     except HTTPException:
