@@ -74,3 +74,19 @@ def upload_meta(content_type: str) -> Tuple[str, str]:
     if content_type == "audio/webm":
         return "akzsa-dictation.webm", "audio/webm"
     return "akzsa-dictation.m4a", "audio/mp4"
+
+
+# Scripts that mean Whisper's automatic language detection guessed wrong for Hinglish speech (typically Urdu/Arabic
+# script on short phrases). Devanagari and Latin are the only expected scripts.
+_WRONG_SCRIPT = re.compile(
+    "[\u0400-\u04FF"            # Cyrillic
+    "\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF"   # Arabic / Urdu
+    "\u0980-\u0DFF"             # Bengali ... Sinhala (every Indic script except Devanagari)
+    "\u0E00-\u0E7F"             # Thai
+    "\u3040-\u9FFF\uAC00-\uD7AF]"   # Japanese / Chinese / Korean
+)
+
+
+def needs_hindi_retry(text: str) -> bool:
+    """True when an auto-detected Hinglish transcript is in a script that cannot be right (see above)."""
+    return bool(_WRONG_SCRIPT.search(text or ""))
