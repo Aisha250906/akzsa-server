@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">AKZSA</string>
+    <string name="ime_label">AKZSA Voice Keyboard</string>
+    <string name="subtype_english">English (US)</string>
+    <string name="subtype_hindi">Hindi (India)</string>
+    <string name="splash_tagline">Voice, made practical</string>
+    <string name="cd_close_keyboard">Hide keyboard</string>
+    <string name="cd_open_settings">Open AKZSA settings</string>
+    <string name="cd_voice_talk">Start or stop voice typing</string>
+    <string name="cd_files_mode">Toggle file search</string>
+    <string name="cd_back_to_typing">Back to typing</string>
+    <string name="cd_search_files">Search files on this phone</string>
+</resources>

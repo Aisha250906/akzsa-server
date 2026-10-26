@@ -1,0 +1,44 @@
+name: AKZSA CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r server/requirements.txt pytest pip-audit
+      - run: python -m compileall -q server/app
+      - run: python -m pytest -q server/tests
+      - run: python -m pip_audit -r server/requirements.txt
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests
+        working-directory: AKZSA-Android
+        run: ./gradlew --no-daemon :app:testFullDebugUnitTest
+      - name: Android lint
+        working-directory: AKZSA-Android
+        run: ./gradlew --no-daemon :app:lintPlayRelease
+      - name: Build debug APK
+        working-directory: AKZSA-Android
+        run: ./gradlew --no-daemon :app:assembleFullDebug
+      - name: Build release bundle (unsigned unless keystore secrets are provided)
+        working-directory: AKZSA-Android
+        run: ./gradlew --no-daemon :app:bundlePlayRelease

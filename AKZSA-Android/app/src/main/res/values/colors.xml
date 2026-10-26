@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Graphite Signal palette. Source of truth: com.nefeon.akzsa.design.GraphiteSignal.
+  GraphiteSignalTest fails if any gs_* value below drifts from the Kotlin tokens.
+-->
+<resources>
+    <!-- Light -->
+    <color name="gs_light_background">#F7F7F0</color>
+    <color name="gs_light_surface">#FFFFFF</color>
+    <color name="gs_light_secondary_surface">#E5E9DF</color>
+    <color name="gs_light_text_primary">#252923</color>
+    <color name="gs_light_text_secondary">#5E635A</color>
+    <color name="gs_light_border">#D5DACB</color>
+    <color name="gs_light_accent">#C8F169</color>
+    <color name="gs_light_on_accent">#151715</color>
+    <color name="gs_light_focus">#3F5F00</color>
+    <!-- Dark -->
+    <color name="gs_dark_background">#151715</color>
+    <color name="gs_dark_surface">#20231F</color>
+    <color name="gs_dark_secondary_surface">#262A24</color>
+    <color name="gs_dark_text_primary">#F2F4EC</color>
+    <color name="gs_dark_text_secondary">#A7AEA0</color>
+    <color name="gs_dark_border">#3A3F37</color>
+    <color name="gs_dark_accent">#C8F169</color>
+    <color name="gs_dark_on_accent">#151715</color>
+    <color name="gs_dark_focus">#C8F169</color>
+</resources>

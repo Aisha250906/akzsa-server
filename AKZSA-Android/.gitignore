@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.cxx/
+# Release signing: NEVER commit
+keystore.properties
+*.jks
+*.keystore
+# Secrets
+.env
+*.env
+# Generated reports
+lint-results*

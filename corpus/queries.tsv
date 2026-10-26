@@ -1,0 +1,32 @@
+query	expected	category
+Tax_Invoice_October.pdf	inv-oct	exact-filename
+resume final	resume	exact-filename
+paneer recipe	recipe	exact-filename
+report	rep-b|rep-a	duplicate-name
+annual sales report 2025	rep-a|rep-b	duplicate-name
+find my GST invoice for ₹25,000	inv-oct	pdf-text
+GST invoice	inv-oct|inv-sep	pdf-text
+invoice INV-2026-09	inv-sep	pdf-text
+kotlin android engineer	resume	pdf-text
+aadhaar acknowledgement	scan-aadhaar	scanned-pdf-ocr
+Ravi Kumar Bengaluru	scan-aadhaar	scanned-pdf-ocr
+flight PNR XK92LM	shot-flight	screenshot-ocr
+wifi speed test	shot-wifi	screenshot-ocr
+petrol receipt 2310	receipt-fuel	screenshot-ocr
+rent receipt	rent	screenshot-ocr
+photo of a dog	img-dog	image-label
+puppy	img-dog	image-label-synonym
+car photos	img-car	image-label
+vehicle	img-car	image-label-synonym
+cat	img-cat	image-label
+beach photo	img-beach	image-label
+इनवॉइस	hi-bill	mixed-script-hindi
+बिल अक्टूबर	hi-bill	mixed-script-hindi
+ಇನ್ವಾಯ್ಸ್	kn-inv	mixed-script-kannada
+ಅಕ್ಟೋಬರ್	kn-inv	mixed-script-kannada
+kiraya rasid	rent	mixed-hinglish
+broken	broken-pdf	malformed-by-filename
+corrupt photo	broken-img	malformed-by-filename
+quantum chromodynamics lecture		no-result
+zzzzqqqq		no-result
+submarine		no-result

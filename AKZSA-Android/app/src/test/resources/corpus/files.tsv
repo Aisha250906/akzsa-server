@@ -1,0 +1,21 @@
+id	filename	relativePath	mime	modifiedMs	extractionKind	imageLabels	text
+inv-oct	Tax_Invoice_October.pdf	Download	application/pdf	1702592000000	pdf-text		GST TAX INVOICE GSTIN: 29ABCDE1234F1Z5 Invoice No INV-2026-17 Taxable Value Rs 25,000.00 CGST 2,250.00 SGST 2,250.00 Total 29,500.00
+inv-sep	Tax_Invoice_September.pdf	Download	application/pdf	1700000000000	pdf-text		GST TAX INVOICE GSTIN: 27AAAAA0000A1Z5 Invoice No INV-2026-09 Taxable Value Rs 8,000.00 CGST 720.00 SGST 720.00 Total 9,440.00
+scan-aadhaar	Scan_0042.pdf	Documents/Scans	application/pdf	1700864000000	pdf-ocr		Government of India Aadhaar enrolment acknowledgement name Ravi Kumar residence Bengaluru
+rep-a	report.pdf	Work/2025	application/pdf	1700432000000	pdf-text		Annual sales report 2025 revenue growth regional breakdown
+rep-b	report.pdf	Work/2026	application/pdf	1704320000000	pdf-text		Annual sales report 2026 revenue growth regional breakdown
+shot-flight	Screenshot_2026-09-01.png	Pictures/Screenshots	image/png	1703456000000	ocr-only		Flight booking confirmation PNR XK92LM Bengaluru to Delhi 14 September departure 06:45
+shot-wifi	Screenshot_2026-09-02.png	Pictures/Screenshots	image/png	1703542400000	ocr-only		Wi-Fi network CafeGuest speed test download 94 Mbps upload 21 Mbps
+img-dog	IMG_0001.jpg	DCIM/Camera	image/jpeg	1701728000000	image-analysis-v2-labels	Dog, Pet, Grass, Puppy	
+img-car	IMG_0002.jpg	DCIM/Camera	image/jpeg	1701814400000	image-analysis-v2-labels	Car, Vehicle, Road, Wheel	
+img-cat	IMG_0003.jpg	DCIM/Camera	image/jpeg	1701900800000	image-analysis-v2-labels	Cat, Pet, Whiskers	
+img-beach	IMG_0004.jpg	DCIM/Camera	image/jpeg	1701987200000	image-analysis-v2-labels	Beach, Sea, Sky, Sand	
+hi-bill	बिल_अक्टूबर.pdf	Download	application/pdf	1702678400000	pdf-text		इनवॉइस संख्या 1234 कुल राशि ₹5000 धन्यवाद
+kn-inv	ಇನ್ವಾಯ್ಸ್_ಅಕ್ಟೋಬರ್.pdf	Download	application/pdf	1702764800000	pdf-text		ಇನ್ವಾಯ್ಸ್ ಸಂಖ್ಯೆ 77 ಮೊತ್ತ ₹1200 ಧನ್ಯವಾದ
+rent	rent_receipt_march.jpg	Documents	image/jpeg	1701296000000	ocr-only		Rent receipt kiraya rasid March 2026 amount Rs 18,000 paid to landlord
+broken-pdf	broken.pdf	Download	application/pdf	1701036800000	failed		
+broken-img	corrupt_photo.jpg	DCIM/Camera	image/jpeg	1701123200000	failed		
+notes	meeting-notes.txt	Documents	text/plain	1702160000000	text		Meeting about project milestones planning and budget review
+resume	Resume_Final_v3.pdf	Documents	application/pdf	1705184000000	pdf-text		Curriculum vitae software engineer Kotlin Android five years experience
+recipe	paneer_recipe.pdf	Documents	application/pdf	1700259200000	pdf-text		Paneer butter masala recipe ingredients tomato cream butter kasuri methi
+receipt-fuel	fuel_receipt.jpg	Pictures	image/jpeg	1703888000000	ocr-only		Indian Oil petrol pump receipt litres 22.5 amount Rs 2,310.00
