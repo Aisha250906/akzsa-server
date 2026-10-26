@@ -6,5 +6,5 @@ Run from the repo root with:  uvicorn main:app
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "server"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "app"))
 from app.main import app  # noqa: E402,F401
